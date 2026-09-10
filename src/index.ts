@@ -132,6 +132,35 @@ Notes:
   return server;
 }
 
+/**
+ * Extract the presented shared secret from a request.
+ *
+ * Accepted, in order:
+ *   Authorization: Bearer <key>   — the canonical form
+ *   Authorization: <key>          — tolerated; clients that let you set a raw
+ *                                   header value commonly omit the scheme, and
+ *                                   silently 401ing on that is a bad failure mode
+ *   X-API-Key: <key>              — for clients that reserve Authorization for
+ *                                   their own OAuth token and won't forward a
+ *                                   custom one (e.g. Claude's custom connector
+ *                                   "additional request headers")
+ */
+function presentedApiKey(req: Request): string {
+  const apiKeyHeader = req.header("x-api-key");
+  if (apiKeyHeader) {
+    return apiKeyHeader.trim();
+  }
+
+  const header = (req.header("authorization") ?? "").trim();
+  if (!header) {
+    return "";
+  }
+
+  return header.toLowerCase().startsWith("bearer ")
+    ? header.slice("bearer ".length).trim()
+    : header;
+}
+
 function requireApiKey(req: Request, res: Response, next: NextFunction): void {
   if (!config.server.apiKey) {
     // No key configured (local/dev use only — assertConfigured() blocks this in production).
@@ -139,8 +168,7 @@ function requireApiKey(req: Request, res: Response, next: NextFunction): void {
     return;
   }
 
-  const header = req.header("authorization") ?? "";
-  const presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+  const presented = presentedApiKey(req);
 
   const expected = Buffer.from(config.server.apiKey);
   const actual = Buffer.from(presented);
@@ -166,6 +194,18 @@ async function runHttp(): Promise<void> {
 
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ status: "ok" });
+  });
+
+  // Streamable HTTP clients may open a GET on the MCP endpoint to receive
+  // server-initiated messages over SSE. This server pushes nothing, so per the
+  // spec it must answer 405 Method Not Allowed rather than fall through to
+  // Express's 404 — a client that reads 404 can conclude the endpoint does not
+  // exist and abandon the connection entirely.
+  app.get("/mcp", (_req, res) => {
+    res
+      .status(405)
+      .set("Allow", "POST")
+      .json({ error: "Method Not Allowed: this MCP endpoint accepts POST only." });
   });
 
   app.post("/mcp", requireApiKey, async (req, res) => {
