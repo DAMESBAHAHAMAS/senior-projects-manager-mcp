@@ -135,30 +135,26 @@ Notes:
 /**
  * Extract the presented shared secret from a request.
  *
- * Accepted, in order:
- *   Authorization: Bearer <key>   — the canonical form
- *   Authorization: <key>          — tolerated; clients that let you set a raw
- *                                   header value commonly omit the scheme, and
- *                                   silently 401ing on that is a bad failure mode
- *   X-API-Key: <key>              — for clients that reserve Authorization for
- *                                   their own OAuth token and won't forward a
- *                                   custom one (e.g. Claude's custom connector
- *                                   "additional request headers")
+ * Accepts the key on either X-API-Key or Authorization, with or without a
+ * "Bearer " scheme prefix on either. Being liberal here is deliberate: the
+ * failure mode for a near-miss is an opaque 401, and operators configuring a
+ * client's raw-header field reasonably guess either shape. The secret itself
+ * still has to match exactly, so tolerance costs nothing.
  */
+function stripBearer(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.toLowerCase().startsWith("bearer ")
+    ? trimmed.slice("bearer ".length).trim()
+    : trimmed;
+}
+
 function presentedApiKey(req: Request): string {
   const apiKeyHeader = req.header("x-api-key");
   if (apiKeyHeader) {
-    return apiKeyHeader.trim();
+    return stripBearer(apiKeyHeader);
   }
 
-  const header = (req.header("authorization") ?? "").trim();
-  if (!header) {
-    return "";
-  }
-
-  return header.toLowerCase().startsWith("bearer ")
-    ? header.slice("bearer ".length).trim()
-    : header;
+  return stripBearer(req.header("authorization") ?? "");
 }
 
 function requireApiKey(req: Request, res: Response, next: NextFunction): void {
