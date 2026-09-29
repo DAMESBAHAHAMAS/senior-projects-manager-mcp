@@ -19,6 +19,7 @@ import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js
 import { DEFAULT_ZIA_AGENT_KEY, ZIA_AGENTS } from "./agents.js";
 import { assertConfigured, config } from "./config.js";
 import { resolveZiaSessionId, triggerZiaAgent } from "./zohoZiaClient.js";
+import { listFolder, readFile } from "./workdriveClient.js";
 
 const AskSeniorProjectsManagerInputSchema = z
   .object({
@@ -123,6 +124,65 @@ Notes:
               text: `Error: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ---- WorkDrive: read-only (V1). No create/update/move/rename/delete/share. ----
+
+  server.registerTool(
+    "list_folder",
+    {
+      title: "List WorkDrive folder",
+      description: `List the direct contents of a Zoho WorkDrive folder by folder ID. READ-ONLY.
+
+Returns each item's name, id and type (folder or file). Does not return file contents; use read_file for that.
+
+The master Canon folder ID is p7w3t11f4f42cc9274bfe8dc948ec3ac03c04 (05_OPERATIONS > CANON). Identify the Canon by this ID, never by folder name (Canon ruling R-0103).`,
+      inputSchema: {
+        folder_id: z.string().min(10).max(64).describe("WorkDrive folder ID, e.g. p7w3t11f4f42cc9274bfe8dc948ec3ac03c04"),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ folder_id }: { folder_id: string }) => {
+      try {
+        const items = await listFolder(folder_id);
+        const lines = items.map((i) => `${i.type}\t${i.id}\t${i.name}`);
+        return {
+          content: [{ type: "text" as const, text: `${items.length} item(s)\ntype\tid\tname\n${lines.join("\n")}` }],
+          structuredContent: { folder_id, count: items.length, items },
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "read_file",
+    {
+      title: "Read WorkDrive file",
+      description: `Read one Zoho WorkDrive text file (for example a Canon .md file) by file ID and return its content. READ-ONLY. V1 returns text files only, up to 1 MB. Get file IDs from list_folder.`,
+      inputSchema: {
+        file_id: z.string().min(10).max(64).describe("WorkDrive file ID from list_folder"),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ file_id }: { file_id: string }) => {
+      try {
+        const result = await readFile(file_id);
+        return {
+          content: [{ type: "text" as const, text: result.text }],
+          structuredContent: { file_id: result.id, name: result.name ?? null, bytes: result.bytes },
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
           isError: true,
         };
       }
