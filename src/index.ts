@@ -10,7 +10,7 @@
 
 import "dotenv/config";
 import { timingSafeEqual } from "node:crypto";
-import { NextFunction, Request, Response } from "express";
+import express, { NextFunction, Request, Response } from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -20,6 +20,8 @@ import { DEFAULT_ZIA_AGENT_KEY, ZIA_AGENTS } from "./agents.js";
 import { assertConfigured, config } from "./config.js";
 import { resolveZiaSessionId, triggerZiaAgent } from "./zohoZiaClient.js";
 import { listFolder, readFile } from "./workdriveClient.js";
+import { slackEventsRouter } from "./channels/slack.js";
+import { describeRoutes } from "./channels/routes.js";
 
 const AskSeniorProjectsManagerInputSchema = z
   .object({
@@ -278,10 +280,21 @@ async function runHttp(): Promise<void> {
     await transport.handleRequest(req, res, req.body);
   });
 
-  app.listen(config.server.port, () => {
+  // Outer app: the Slack route needs the raw request body to verify Slack's
+  // signature, and the MCP app parses every body as JSON first. So the Slack
+  // route is mounted ahead of the MCP app, and every other path falls through
+  // to it unchanged.
+  const outer = express();
+  outer.use(slackEventsRouter());
+  outer.use(app);
+
+  outer.listen(config.server.port, () => {
     console.error(
-      `senior-projects-manager-mcp-server listening on port ${config.server.port} (POST /mcp)`
+      `senior-projects-manager-mcp-server listening on port ${config.server.port} (POST /mcp, POST /slack/events)`
     );
+    for (const line of describeRoutes()) {
+      console.error(`[routes] ${line}`);
+    }
   });
 }
 

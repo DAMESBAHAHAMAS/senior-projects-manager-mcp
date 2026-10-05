@@ -1,0 +1,33 @@
+{
+  "display_information": {
+    "name": "DK Operations",
+    "description": "Routes requests posted in function channels to the right Zia agent and replies in the same thread.",
+    "background_color": "#0b3d5c"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "DK Operations",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "channels:history",
+        "chat:write",
+        "chat:write.customize",
+        "chat:write.public",
+        "reactions:write"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://senior-projects-manager-mcp-server.onrender.com/slack/events",
+      "bot_events": ["message.channels"]
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

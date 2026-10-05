@@ -93,6 +93,43 @@ with its key, display name, and numeric agent id — no changes needed in the
 client or transport layers. Callers then pass that key as the tool's `agent`
 argument; omitting it keeps using the default.
 
+## Slack channel routing
+
+`POST /slack/events` turns each function channel into a working interface:
+
+```
+Damian posts in #fn-finance
+  -> Slack Events API -> /slack/events (signature checked, answered in < 3 s)
+  -> routing table (src/channels/routes.ts): channel id -> agent key
+  -> triggerZiaAgent() (same client the MCP tool uses)
+  -> agent answer posted in the same thread, as the DK Operations bot
+```
+
+- **Chat-neutral core.** `src/channels/router.ts` knows nothing about Slack.
+  `src/channels/slack.ts` is the only Slack-specific file, so a Zoho Cliq or
+  Connect adapter later reuses the router, the table and the agent registry.
+- **Who triggers an agent.** Only hand-typed messages from
+  `ROUTER_ALLOWED_USERS` (default: Damian). Bot posts, edits, joins, and posts
+  that ChatGPT or Claude make through Damian's account are ignored, so canon
+  notices and agent traffic never trigger an agent and nothing can loop.
+- **Threads.** A top-level message starts a thread. Replies in that thread
+  continue the same Zia conversation: the thread's Slack timestamp becomes the
+  numeric Zia session id. Replies inside threads a person did not start (for
+  example an agent's notice) are ignored.
+- **Inactive routes.** A route answers only when its agent is registered. Set
+  the agent's id (e.g. `ZIA_FINANCE_AGENT_ID`) on the host to switch the
+  channel on; no code change. Until then the channel replies once that the
+  agent is not connected yet, and runs nothing.
+- **Failures.** The channel gets one neutral line. The detail goes to the host
+  log and, when `SLACK_OPS_ALERT_CHANNEL` is set, to that channel.
+- **Adding a channel.** One row in `routes.ts` (or in `CHANNEL_ROUTES_JSON`
+  without a deploy), then `/invite @DK Operations` in the channel.
+- **Slack app.** Create it from `slack/manifest.json`, install it, and set
+  `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` on the host. Before the signing
+  secret is set, the route only answers Slack's URL check.
+
+Tests: `npm test`.
+
 ## Connecting an MCP client
 
 Once deployed, point a remote-MCP-capable client at:
