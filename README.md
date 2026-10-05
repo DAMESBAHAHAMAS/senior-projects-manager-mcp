@@ -123,7 +123,10 @@ Damian posts in #fn-finance
 - **Failures.** The channel gets one neutral line. The detail goes to the host
   log and, when `SLACK_OPS_ALERT_CHANNEL` is set, to that channel.
 - **Adding a channel.** One row in `routes.ts` (or in `CHANNEL_ROUTES_JSON`
-  without a deploy), then `/invite @DK Operations` in the channel.
+  without a deploy). At startup the bot joins every public channel whose route
+  is ACTIVE (`channels:join`), so no manual invite is needed; a channel whose
+  agent is not registered stays silent until its agent id is set. Private
+  channels still need `/invite`.
 - **Slack app.** Create it from `slack/manifest.json`, install it, and set
   `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` on the host. Before the signing
   secret is set, the route only answers Slack's URL check.

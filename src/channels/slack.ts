@@ -24,7 +24,7 @@ import express, { Request, Response, Router } from "express";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import axios from "axios";
 import { handleInbound, InboundMessage, ReplyPort } from "./router.js";
-import { findRoute } from "./routes.js";
+import { activeConversationIds, findRoute } from "./routes.js";
 
 const SLACK_API = "https://slack.com/api";
 const DEFAULT_ALLOWED_USERS = "U08FY0GQ9G8";
@@ -274,6 +274,34 @@ async function threadRootIsHuman(
   }
   threadRootCache.set(key, human);
   return human;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-join: the bot joins every public channel whose route is ACTIVE
+// ---------------------------------------------------------------------------
+
+/**
+ * Join each routed channel whose agent is registered. Runs at startup, and
+ * Render restarts the service on every env change, so setting an agent id
+ * (e.g. ZIA_FINANCE_AGENT_ID) or adding a CHANNEL_ROUTES_JSON row brings the
+ * bot into that channel with no manual invite. Needs the channels:join scope
+ * and works for public channels only; a private channel still needs an invite.
+ * Never throws: a failed join is logged and the service keeps running.
+ */
+export async function joinActiveSlackChannels(): Promise<void> {
+  const { botToken } = slackConfig();
+  if (!botToken) {
+    log({ step: "auto-join", outcome: "skipped", reason: "SLACK_BOT_TOKEN not set" });
+    return;
+  }
+  for (const channel of activeConversationIds("slack")) {
+    try {
+      await slackApi(botToken, "conversations.join", { channel });
+      log({ step: "auto-join", channel, outcome: "joined" });
+    } catch (error) {
+      log({ step: "auto-join", channel, outcome: "failed", detail: error instanceof Error ? error.message : String(error) });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

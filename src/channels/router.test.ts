@@ -96,3 +96,11 @@ test("A failed receipt reaction does not stop the answer", async () => {
   assert.equal(outcome, "answered");
   assert.ok(calls.some((c) => c.step === "reply"));
 });
+
+test("Only channels with a registered agent are joined", async () => {
+  const { activeConversationIds } = await import("./routes.js");
+  const ids = activeConversationIds("slack");
+  assert.ok(ids.includes("C0C60NJRTQQ"), "business ops joins");
+  assert.ok(ids.includes("C0C54DTSNUW"), "finance joins once its id is set");
+  assert.ok(!ids.includes("C0C54E4PQQ6"), "sales and marketing stays out until its agent exists");
+});

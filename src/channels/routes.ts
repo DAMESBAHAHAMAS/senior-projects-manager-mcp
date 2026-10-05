@@ -77,3 +77,15 @@ export function describeRoutes(): string[] {
     ([key, route]) => `${key} -> ${route.agentKey} (${route.label}) ${isRouteActive(route) ? "ACTIVE" : "inactive: agent not registered"}`
   );
 }
+
+/**
+ * Conversation ids on one chat platform whose route is ACTIVE. The adapter
+ * joins exactly these at startup, so a channel goes live on its own the moment
+ * its agent is registered, and channels without an agent stay silent.
+ */
+export function activeConversationIds(source: ChatSource): string[] {
+  const prefix = `${source}:`;
+  return Object.entries(ALL_ROUTES)
+    .filter(([key, route]) => key.startsWith(prefix) && isRouteActive(route))
+    .map(([key]) => key.slice(prefix.length));
+}

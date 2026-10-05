@@ -20,7 +20,7 @@ import { DEFAULT_ZIA_AGENT_KEY, ZIA_AGENTS } from "./agents.js";
 import { assertConfigured, config } from "./config.js";
 import { resolveZiaSessionId, triggerZiaAgent } from "./zohoZiaClient.js";
 import { listFolder, readFile } from "./workdriveClient.js";
-import { slackEventsRouter } from "./channels/slack.js";
+import { joinActiveSlackChannels, slackEventsRouter } from "./channels/slack.js";
 import { describeRoutes } from "./channels/routes.js";
 
 const AskSeniorProjectsManagerInputSchema = z
@@ -295,6 +295,7 @@ async function runHttp(): Promise<void> {
     for (const line of describeRoutes()) {
       console.error(`[routes] ${line}`);
     }
+    void joinActiveSlackChannels();
   });
 }
 
