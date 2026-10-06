@@ -38,6 +38,8 @@ const REPLY_CHUNK_CHARS = 11_000;
 const HUMAN_SUBTYPES = new Set([undefined, "thread_broadcast", "file_share"]);
 /** Attribution Slack shows on posts an app made through a person's account ("Sent using ChatGPT"). */
 const AGENT_ATTRIBUTION = /\bsent using\b/i;
+/** A message that opens with an unresolved "@name", optionally inside backticks or quotes. */
+const PLAIN_AT_MENTION = /^[\s`'"*_~(]*@[A-Za-z]/;
 
 export interface SlackMessageEvent {
   type: string;
@@ -111,6 +113,8 @@ export function humanSkipReason(event: SlackMessageEvent, allowedUsers: Set<stri
   if (!event.user || !allowedUsers.has(event.user)) return "sender-not-allowlisted";
   if (!event.text || !event.text.trim()) return "empty-text";
   if (/<@[A-Z0-9]+>/.test(event.text)) return "explicit-mention";
+  // Typed or pasted "@ChatGPT ..." that Slack did not resolve (code span, plain paste) still addresses another app.
+  if (PLAIN_AT_MENTION.test(event.text)) return "plain-at-mention";
   if (AGENT_ATTRIBUTION.test(event.text)) return "agent-attribution";
   return null;
 }

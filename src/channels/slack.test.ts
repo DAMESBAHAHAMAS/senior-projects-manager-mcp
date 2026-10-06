@@ -42,6 +42,9 @@ test("only a hand-typed message from an allowlisted person routes", () => {
   assert.equal(humanSkipReason({ ...typed, subtype: "message_changed" }, allowed), "subtype:message_changed");
   assert.equal(humanSkipReason({ ...typed, subtype: "channel_join" }, allowed), "subtype:channel_join");
   assert.equal(humanSkipReason({ ...typed, text: "   " }, allowed), "empty-text");
+  assert.equal(humanSkipReason({ ...typed, text: "`@ChatGPT Hi`" }, allowed), "plain-at-mention");
+  assert.equal(humanSkipReason({ ...typed, text: "@gpt what is due?" }, allowed), "plain-at-mention");
+  assert.equal(humanSkipReason({ ...typed, text: "Email me @ 5pm about cash" }, allowed), null);
   assert.equal(
     humanSkipReason({ ...typed, text: "Canon change R-0109\n*Sent using* <@U0AL7P2CE4R|ChatGPT>" }, allowed),
     "agent-attribution"
