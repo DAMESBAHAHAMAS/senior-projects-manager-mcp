@@ -7,7 +7,7 @@ process.env.ZOHO_CLIENT_ID = "test";
 process.env.ZOHO_CLIENT_SECRET = "test";
 process.env.ZOHO_REFRESH_TOKEN = "test";
 
-const { handleInbound, neutralFailureText, notConnectedText } = await import("./router.js");
+const { handleInbound, neutralFailureText, notConnectedText, parseGptCommand, gptFailureText, gptUsageText } = await import("./router.js");
 type ReplyPort = import("./router.js").ReplyPort;
 
 function recordingPort() {
@@ -103,4 +103,107 @@ test("Only channels with a registered agent are joined", async () => {
   assert.ok(ids.includes("C0C60NJRTQQ"), "business ops joins");
   assert.ok(ids.includes("C0C54DTSNUW"), "finance joins once its id is set");
   assert.ok(!ids.includes("C0C54E4PQQ6"), "sales and marketing stays out until its agent exists");
+});
+
+test("!gpt routes to OpenAI with the prefix stripped and never calls Zia", async () => {
+  const { port, calls } = recordingPort();
+  let ziaCalled = false;
+  let prompt: string | undefined;
+  const outcome = await handleInbound(
+    { ...base, conversationId: "C0C60NJRTQQ", text: "!gpt hello" },
+    port,
+    async () => {
+      ziaCalled = true;
+      return "zia";
+    },
+    async (p) => {
+      prompt = p;
+      return "Hi from OpenAI.";
+    }
+  );
+  assert.equal(outcome, "answered");
+  assert.equal(ziaCalled, false);
+  assert.equal(prompt, "hello");
+  assert.deepEqual(calls.map((c) => c.step), ["received", "reply", "finished"]);
+  assert.deepEqual(calls[1].args, ["Hi from OpenAI.", "GPT"]);
+  assert.deepEqual(calls[2].args, [true]);
+});
+
+test("!gpt prefix parsing is exact", () => {
+  assert.equal(parseGptCommand("!gpt hello"), "hello");
+  assert.equal(parseGptCommand("  !GPT   Summarize today.\nSecond line "), "Summarize today.\nSecond line");
+  assert.equal(parseGptCommand("!gpt"), "");
+  assert.equal(parseGptCommand("!gptx hello"), null);
+  assert.equal(parseGptCommand("What is due today? !gpt"), null);
+  assert.equal(parseGptCommand("What is due today in Zoho Projects?"), null);
+});
+
+test("plain messages still go to Zia and never to OpenAI", async () => {
+  const { port } = recordingPort();
+  let gptCalled = false;
+  let invoked: unknown[] = [];
+  const outcome = await handleInbound(
+    { ...base, conversationId: "C0C60NJRTQQ", text: "What is due today in Zoho Projects?" },
+    port,
+    async (...args) => {
+      invoked = args;
+      return "Three tasks.";
+    },
+    async () => {
+      gptCalled = true;
+      return "gpt";
+    }
+  );
+  assert.equal(outcome, "answered");
+  assert.equal(gptCalled, false);
+  assert.equal(invoked[1], "senior-projects-manager");
+});
+
+test("an OpenAI failure gives one neutral line, alerts ops, and does not fall back to Zia", async () => {
+  const { port, calls } = recordingPort();
+  let ziaCalled = false;
+  const outcome = await handleInbound(
+    { ...base, conversationId: "C0C60NJRTQQ", text: "!gpt hello" },
+    port,
+    async () => {
+      ziaCalled = true;
+      return "zia";
+    },
+    async () => {
+      throw new Error("OpenAI request failed (HTTP 401): invalid_api_key");
+    }
+  );
+  assert.equal(outcome, "failed");
+  assert.equal(ziaCalled, false);
+  const reply = calls.find((c) => c.step === "reply")!;
+  assert.equal(reply.args[0], gptFailureText());
+  assert.ok(!String(reply.args[0]).includes("invalid_api_key"));
+  assert.deepEqual(calls.find((c) => c.step === "finished")!.args, [false]);
+  assert.ok(String(calls.find((c) => c.step === "alertOps")!.args[0]).includes("invalid_api_key"));
+});
+
+test("a bare !gpt replies with usage and calls nothing", async () => {
+  const { port, calls } = recordingPort();
+  let called = false;
+  await handleInbound(
+    { ...base, conversationId: "C0C60NJRTQQ", text: "!gpt" },
+    port,
+    async () => {
+      called = true;
+      return "zia";
+    },
+    async () => {
+      called = true;
+      return "gpt";
+    }
+  );
+  assert.equal(called, false);
+  assert.equal(calls[0].args[0], gptUsageText());
+});
+
+test("!gpt in an unrouted channel is ignored", async () => {
+  const { port, calls } = recordingPort();
+  const outcome = await handleInbound({ ...base, conversationId: "C0C20DW4UP5", text: "!gpt hi" }, port, async () => "x", async () => "y");
+  assert.equal(outcome, "not-routed");
+  assert.equal(calls.length, 0);
 });
