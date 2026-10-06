@@ -320,13 +320,6 @@ async function processEvent(envelope: SlackEnvelope): Promise<void> {
   const event = envelope.event;
   const eventId = envelope.event_id ?? "unknown";
   if (!event) return;
-  console.error(JSON.stringify({
-    evt: "slack-debug",
-    text: event.text,
-    subtype: event.subtype,
-    app_id: event.app_id,
-    bot_id: event.bot_id
-  }));
 
   if (!seenEvents.firstSighting(eventId)) {
     log({ id: eventId, decision: "skip", reason: "duplicate-delivery" });
