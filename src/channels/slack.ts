@@ -110,6 +110,7 @@ export function humanSkipReason(event: SlackMessageEvent, allowedUsers: Set<stri
   if (event.app_id) return "app-post";
   if (!event.user || !allowedUsers.has(event.user)) return "sender-not-allowlisted";
   if (!event.text || !event.text.trim()) return "empty-text";
+  if (/<@[A-Z0-9]+>/.test(event.text)) return "explicit-mention";
   if (AGENT_ATTRIBUTION.test(event.text)) return "agent-attribution";
   return null;
 }
