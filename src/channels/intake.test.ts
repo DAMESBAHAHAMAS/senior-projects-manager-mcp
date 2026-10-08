@@ -225,6 +225,8 @@ test("parsing: acknowledgments name a known function; GPT and prose do not count
   assert.equal(parseAck("Acknowledged by Finance"), "Finance");
   assert.equal(parseAck("acknowledged by systems and automation."), "Systems & Automation");
   assert.equal(parseAck("Acknowledged by Systems &amp; Automation\nWill start now"), "Systems & Automation");
+  assert.equal(parseAck("Acknowledged by Finance *Sent using* <@U0AMNQ8V3J8>"), "Finance");
+  assert.equal(parseAck("Acknowledged by Systems & Automation _Sent using_ <@U0AMNQ8V3J8|Claude>"), "Systems & Automation");
   assert.equal(parseAck("Acknowledged by GPT"), null);
   assert.equal(parseAck("Acknowledged by Bob"), null);
   assert.equal(parseAck("I have Acknowledged by Finance"), null);

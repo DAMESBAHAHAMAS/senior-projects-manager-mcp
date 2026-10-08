@@ -119,7 +119,9 @@ export function isRelayLine(text: string): boolean {
 export function parseAck(text: string): Recipient | null {
   const match = /^acknowledged by\s+(.+)$/i.exec(firstLine(text));
   if (!match) return null;
-  const recipient = normalizeRecipient(match[1].trim().replace(/[.!\s]+$/, ""));
+  // A connector may add "*Sent using* <@app>" after the text; it is attribution, not part of the name.
+  const name = match[1].replace(/\s*\*?_?sent using(?![a-z]).*$/i, "").trim().replace(/[.!\s]+$/, "");
+  const recipient = normalizeRecipient(name);
   return recipient && recipient !== "GPT" ? recipient : null;
 }
 
@@ -284,7 +286,9 @@ export async function handleIntake(event: IntakeEvent, cfg: IntakeConfig, deps: 
   if (ack) return handleAck(event, ack, cfg, deps);
 
   if (isRelayLine(text)) {
-    deps.log({ ...base, decision: "skip", reason: "relay-line" });
+    // First line only, truncated: shows why an "Acknowledged by ..." line was not recognized.
+    const shown = /^acknowledged by/i.test(firstLine(text)) ? { first_line: firstLine(text).slice(0, 80) } : {};
+    deps.log({ ...base, decision: "skip", reason: "relay-line", ...shown });
     return "skipped";
   }
   if (await deps.isSelf(event)) {
