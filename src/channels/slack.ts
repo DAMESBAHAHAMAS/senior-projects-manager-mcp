@@ -26,7 +26,6 @@ import axios from "axios";
 import { handleInbound, InboundMessage, ReplyPort } from "./router.js";
 import { activeConversationIds, findRoute } from "./routes.js";
 import { handleIntake, HistoryMessage, intakeConfig, IntakeDeps, IntakeEvent, ThreadMessage } from "./intake.js";
-import { readHandoff } from "../haikuClient.js";
 import { askOpenAI } from "../openaiClient.js";
 
 const SLACK_API = "https://slack.com/api";
@@ -354,7 +353,6 @@ function intakeDeps(token: string, channel: string): IntakeDeps {
       }
       return Boolean((e.user && e.user === selfIdentity.userId) || (e.bot_id && e.bot_id === selfIdentity.botId));
     },
-    readHandoff,
     post: (threadTs, text) => postInThread(token, channel, threadTs, text, "DK Operations"),
     threadMessages: async (threadTs): Promise<ThreadMessage[]> => {
       const data = await slackApi<{ messages?: { user?: string; bot_id?: string; text?: string }[] }>(

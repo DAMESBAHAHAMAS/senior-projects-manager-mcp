@@ -22,8 +22,6 @@
  * can be tested without Slack or any API.
  */
 
-import { HaikuResult } from "../haikuClient.js";
-
 export const RECIPIENTS = [
   "Business Operations",
   "Finance",
@@ -38,7 +36,7 @@ export const DEFAULT_INTAKE_CHANNELS = "C0C20DW4UP5"; // #agent-ops
 /** Message subtypes a person (or a person's connector) can produce by typing. */
 const POSTED_SUBTYPES = new Set([undefined, "thread_broadcast", "file_share"]);
 /** First-line prefixes of lines the relay or a destination writes. Never treated as handoffs. */
-const RELAY_LINE_PREFIXES = ["intake:", "intake failed:", "acknowledged by", "gpt:"];
+const RELAY_LINE_PREFIXES = ["received and queued for", "intake:", "intake failed:", "acknowledged by", "gpt:"];
 
 export interface IntakeEvent {
   type: string;
@@ -150,7 +148,7 @@ export type AckTarget = { kind: "target"; ts: string } | { kind: "none"; reason:
  */
 export function findAckTarget(history: HistoryMessage[], ackTs: string, by: Recipient, allowedUsers: Set<string>): AckTarget {
   const before = history.filter((m) => Number(m.ts) < Number(ackTs)).sort((a, b) => Number(a.ts) - Number(b.ts));
-  const queuedLine = `intake: read and queued for ${by}`.toLowerCase();
+  const queuedLine = `received and queued for ${by}`.toLowerCase();
   let sawHandoff = false;
   let sawQueued = false;
   for (let i = before.length - 1; i >= 0; i--) {
@@ -182,13 +180,9 @@ export function sanitizeSentence(sentence: string): string {
     .slice(0, 300);
 }
 
-export function readLine(recipient: Recipient, sentence: string): string {
-  return `Intake: read and queued for ${recipient}. Not yet acknowledged by that session. Request as read: ${sanitizeSentence(sentence)}`;
+export function receiptLine(recipient: Recipient): string {
+  return `Received and queued for ${recipient}`;
 }
-export function noRequestLine(recipient: Recipient): string {
-  return `Intake: read, but no clear request was found. Sender, please restate what you need from ${recipient}.`;
-}
-export const FAILED_LINE = "Intake failed: DK Operations could not read this post. It has not been queued.";
 export function unrecognizedLine(): string {
   return `Intake: recipient not recognized. Use one of: ${RECIPIENTS.join(", ")}`;
 }
@@ -202,8 +196,6 @@ export interface ThreadMessage {
 export interface IntakeDeps {
   /** True when the event is something DK Operations itself posted. */
   isSelf(event: IntakeEvent): Promise<boolean>;
-  /** Haiku reads the handoff text. */
-  readHandoff(text: string): Promise<HaikuResult>;
   /** Post into the handoff's thread as DK Operations. */
   post(threadTs: string, text: string): Promise<void>;
   /** The messages in the thread so far, oldest first (used for GPT context). */
@@ -226,9 +218,7 @@ export type IntakeOutcome =
   | "skipped" // recognized as something to ignore; the caller must stop
   | "acknowledged" // a valid destination acknowledgment flipped a handoff to acknowledged
   | "unrecognized"
-  | "read"
-  | "no-request"
-  | "failed"
+  | "received"
   | "gpt-answered"
   | "gpt-failed";
 
@@ -344,21 +334,11 @@ export async function handleIntake(event: IntakeEvent, cfg: IntakeConfig, deps: 
     }
   }
 
-  const result = await deps.readHandoff(decodeSlackText(text));
-  if (result.kind === "read") {
-    deps.log({ ...base, ...identity, decision: "intake", recipient: handoff.recipient, outcome: "read" });
-    await post(readLine(handoff.recipient, result.sentence));
-    await deps.markPending(event.ts).catch((error) =>
-      deps.log({ ...base, step: "markPending", outcome: "marker-error", detail: error instanceof Error ? error.message : String(error) })
-    );
-    return "read";
-  }
-  if (result.kind === "no-request") {
-    deps.log({ ...base, ...identity, decision: "intake", recipient: handoff.recipient, outcome: "no-request" });
-    await post(noRequestLine(handoff.recipient));
-    return "no-request";
-  }
-  deps.log({ ...base, ...identity, decision: "intake", recipient: handoff.recipient, outcome: "failed", detail: result.detail });
-  await post(FAILED_LINE);
-  return "failed";
+  // Immediate bot receipt. It says DK Operations received and queued the post; it does not claim the recipient has read it.
+  deps.log({ ...base, ...identity, decision: "receipt", recipient: handoff.recipient });
+  await post(receiptLine(handoff.recipient));
+  await deps.markPending(event.ts).catch((error) =>
+    deps.log({ ...base, step: "markPending", outcome: "marker-error", detail: error instanceof Error ? error.message : String(error) })
+  );
+  return "received";
 }
