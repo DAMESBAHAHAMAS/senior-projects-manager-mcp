@@ -25,6 +25,9 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import axios from "axios";
 import { handleInbound, InboundMessage, ReplyPort } from "./router.js";
 import { activeConversationIds, findRoute } from "./routes.js";
+import { handleIntake, intakeConfig, IntakeDeps, IntakeEvent, ThreadMessage } from "./intake.js";
+import { readHandoff } from "../haikuClient.js";
+import { askOpenAI } from "../openaiClient.js";
 
 const SLACK_API = "https://slack.com/api";
 const DEFAULT_ALLOWED_USERS = "U08FY0GQ9G8";
@@ -319,6 +322,43 @@ function log(fields: Record<string, unknown>): void {
   console.error(JSON.stringify({ evt: "slack", ...fields }));
 }
 
+const intakeSeen = new TtlSet(DEDUPE_TTL_MS);
+let selfIdentity: { userId?: string; botId?: string } | undefined;
+
+function intakeDeps(token: string, channel: string): IntakeDeps {
+  return {
+    isSelf: async (e) => {
+      if (!selfIdentity) {
+        try {
+          const me = await slackApi<{ user_id?: string; bot_id?: string }>(token, "auth.test", {});
+          selfIdentity = { userId: me.user_id, botId: me.bot_id };
+        } catch (error) {
+          // The relay-line prefix guard still stops loops if identity cannot be read.
+          log({ evt: "intake", step: "auth.test", outcome: "failed", detail: String(error) });
+          return false;
+        }
+      }
+      return Boolean((e.user && e.user === selfIdentity.userId) || (e.bot_id && e.bot_id === selfIdentity.botId));
+    },
+    readHandoff,
+    post: (threadTs, text) => postInThread(token, channel, threadTs, text, "DK Operations"),
+    threadMessages: async (threadTs): Promise<ThreadMessage[]> => {
+      const data = await slackApi<{ messages?: { user?: string; bot_id?: string; text?: string }[] }>(
+        token,
+        "conversations.replies",
+        { channel, ts: threadTs, limit: 50 },
+        "GET"
+      );
+      return (data.messages ?? [])
+        .filter((m) => m.text)
+        .map((m) => ({ who: m.bot_id ? "Bot" : m.user ?? "Unknown", text: m.text as string }));
+    },
+    askGpt: askOpenAI,
+    firstSighting: (key) => intakeSeen.firstSighting(key),
+    log,
+  };
+}
+
 async function processEvent(envelope: SlackEnvelope): Promise<void> {
   const cfg = slackConfig();
   const event = envelope.event;
@@ -328,6 +368,13 @@ async function processEvent(envelope: SlackEnvelope): Promise<void> {
   if (!seenEvents.firstSighting(eventId)) {
     log({ id: eventId, decision: "skip", reason: "duplicate-delivery" });
     return;
+  }
+
+  // Intake relay: handoff posts ("TO: <function>") get an intake line. Runs ahead of the
+  // routing and skip rules below, which would otherwise drop agent-posted handoffs.
+  if (cfg.botToken) {
+    const intake = await handleIntake(event as IntakeEvent, intakeConfig(cfg.allowedUsers), intakeDeps(cfg.botToken, event.channel));
+    if (intake !== "not-intake") return;
   }
 
   const route = findRoute("slack", event.channel);
