@@ -25,7 +25,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import axios from "axios";
 import { handleInbound, InboundMessage, ReplyPort } from "./router.js";
 import { activeConversationIds, findRoute } from "./routes.js";
-import { handleIntake, intakeConfig, IntakeDeps, IntakeEvent, ThreadMessage } from "./intake.js";
+import { handleIntake, HistoryMessage, intakeConfig, IntakeDeps, IntakeEvent, ThreadMessage } from "./intake.js";
 import { readHandoff } from "../haikuClient.js";
 import { askOpenAI } from "../openaiClient.js";
 
@@ -328,6 +328,17 @@ function log(fields: Record<string, unknown>): void {
 const intakeSeen = new TtlSet(DEDUPE_TTL_MS);
 let selfIdentity: { userId?: string; botId?: string } | undefined;
 
+/** Add or remove one reaction on a message. Repeats are harmless: "already there" and "not there" count as done. */
+async function setMarker(token: string, channel: string, timestamp: string, name: string, add: boolean): Promise<void> {
+  try {
+    await slackApi(token, add ? "reactions.add" : "reactions.remove", { channel, timestamp, name });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/already_reacted|no_reaction/.test(detail)) return;
+    throw error;
+  }
+}
+
 function intakeDeps(token: string, channel: string): IntakeDeps {
   return {
     isSelf: async (e) => {
@@ -355,6 +366,20 @@ function intakeDeps(token: string, channel: string): IntakeDeps {
       return (data.messages ?? [])
         .filter((m) => m.text)
         .map((m) => ({ who: m.bot_id ? "Bot" : m.user ?? "Unknown", text: m.text as string }));
+    },
+    threadHistory: async (threadTs): Promise<Omit<HistoryMessage, "self">[]> => {
+      const data = await slackApi<{ messages?: { ts: string; user?: string; bot_id?: string; text?: string }[] }>(
+        token,
+        "conversations.replies",
+        { channel, ts: threadTs, limit: 200 },
+        "GET"
+      );
+      return (data.messages ?? []).map((m) => ({ ts: m.ts, user: m.user, bot_id: m.bot_id, text: m.text ?? "" }));
+    },
+    markPending: (messageTs) => setMarker(token, channel, messageTs, "hourglass_flowing_sand", true),
+    markAcknowledged: async (messageTs) => {
+      await setMarker(token, channel, messageTs, "hourglass_flowing_sand", false);
+      await setMarker(token, channel, messageTs, "white_check_mark", true);
     },
     askGpt: askOpenAI,
     firstSighting: (key) => intakeSeen.firstSighting(key),

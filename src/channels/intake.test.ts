@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 const intake = await import("./intake.js");
 const haiku = await import("../haikuClient.js");
-const { parseHandoff, normalizeRecipient, isRelayLine, readLine, noRequestLine, FAILED_LINE, unrecognizedLine, GPT_FAILED_LINE, handleIntake, RECIPIENTS } = intake;
+const { parseAck, parseFrom, findAckTarget, parseHandoff, normalizeRecipient, isRelayLine, readLine, noRequestLine, FAILED_LINE, unrecognizedLine, GPT_FAILED_LINE, handleIntake, RECIPIENTS } = intake;
 type IntakeDeps = import("./intake.js").IntakeDeps;
 type HaikuResult = import("../haikuClient.js").HaikuResult;
 
@@ -13,16 +13,20 @@ const handoff = (text: string, extra: object = {}) => ({ type: "message", channe
 
 function fakeDeps(over: Partial<IntakeDeps> = {}, haikuResult: HaikuResult = { kind: "read", sentence: "Send the March invoice totals." }) {
   const posts: { threadTs: string; text: string }[] = [];
+  const marks: string[] = [];
   const calls = { haiku: 0, gpt: 0 };
   const seen = new Set<string>();
   const deps: IntakeDeps = {
-    isSelf: async () => false,
+    isSelf: async (e) => e.bot_id === "B0C7K37SWUQ",
     readHandoff: async () => {
       calls.haiku++;
       return haikuResult;
     },
     post: async (threadTs, text) => void posts.push({ threadTs, text }),
     threadMessages: async () => [{ who: "U1", text: "TO: GPT\nWhat is 2+2?" }],
+    threadHistory: async () => [],
+    markPending: async (ts) => void marks.push(`pending:${ts}`),
+    markAcknowledged: async (ts) => void marks.push(`acknowledged:${ts}`),
     askGpt: async () => {
       calls.gpt++;
       return "4";
@@ -31,7 +35,7 @@ function fakeDeps(over: Partial<IntakeDeps> = {}, haikuResult: HaikuResult = { k
     log: () => undefined,
     ...over,
   };
-  return { deps, posts, calls };
+  return { deps, posts, calls, marks };
 }
 
 test("recognizer: all six recipients, case and 'and' for '&'", () => {
@@ -184,4 +188,151 @@ test("readHandoff without a key fails safely instead of inventing a restatement"
   } finally {
     if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Status markers and acknowledgments (all simulated: fakes stand in for Slack and for the function sessions)
+// ---------------------------------------------------------------------------
+
+const BOT = "B0C7K37SWUQ";
+const hist = (ts: string, text: string, extra: object = {}) => ({ ts, text, user: DAMIAN, self: false, ...extra });
+const intakeLine = (ts: string, to: string) => hist(ts, `Intake: read and queued for ${to}. Not yet acknowledged by that session. Request as read: x`, { user: undefined, bot_id: BOT, self: true });
+const allowed = new Set([DAMIAN]);
+
+test("a queued handoff gets the pending marker; no-request, failed and unrecognized handoffs do not", async () => {
+  const ok = fakeDeps();
+  await handleIntake(handoff("TO: Finance\nSend totals", { ts: "10.1" }), cfg, ok.deps);
+  assert.deepEqual(ok.marks, ["pending:10.1"]);
+  for (const result of [{ kind: "no-request" }, { kind: "failed", detail: "x" }] as HaikuResult[]) {
+    const f = fakeDeps({}, result);
+    await handleIntake(handoff("TO: Finance\nhi"), cfg, f.deps);
+    assert.deepEqual(f.marks, []);
+  }
+  const bad = fakeDeps();
+  await handleIntake(handoff("TO: Nobody\nhi"), cfg, bad.deps);
+  assert.deepEqual(bad.marks, []);
+});
+
+test("the intake bot's own line is never an acknowledgment", async () => {
+  const f = fakeDeps({ isSelf: async () => true, threadHistory: async () => [] });
+  const line = "Acknowledged by Finance";
+  assert.equal(await handleIntake({ ...handoff(line, { ts: "10.9", thread_ts: "10.1" }) }, cfg, f.deps), "skipped");
+  assert.deepEqual(f.marks, []);
+  assert.equal(parseAck("Intake: read and queued for Finance. Not yet acknowledged by that session."), null);
+});
+
+test("parsing: acknowledgments name a known function; GPT and prose do not count", () => {
+  assert.equal(parseAck("Acknowledged by Finance"), "Finance");
+  assert.equal(parseAck("acknowledged by systems and automation."), "Systems & Automation");
+  assert.equal(parseAck("Acknowledged by Systems &amp; Automation\nWill start now"), "Systems & Automation");
+  assert.equal(parseAck("Acknowledged by GPT"), null);
+  assert.equal(parseAck("Acknowledged by Bob"), null);
+  assert.equal(parseAck("I have Acknowledged by Finance"), null);
+  assert.equal(parseFrom("TO: Finance\nFROM: Systems & Automation\nx"), "Systems & Automation");
+  assert.equal(parseFrom("TO: Finance\nx"), null);
+});
+
+test("direction 1: a Finance acknowledgment flips the handoff to Finance from pending to acknowledged", async () => {
+  const history = [
+    hist("10.1", "TO: Finance\nFROM: Systems & Automation\nSend totals"),
+    intakeLine("10.2", "Finance"),
+  ];
+  const f = fakeDeps({ threadHistory: async () => history });
+  const out = await handleIntake(handoff("Acknowledged by Finance", { ts: "10.5", thread_ts: "10.1" }), cfg, f.deps);
+  assert.equal(out, "acknowledged");
+  assert.deepEqual(f.marks, ["acknowledged:10.1"]);
+  assert.equal(f.posts.length, 0, "the relay stays silent on an acknowledgment");
+});
+
+test("direction 2: a Systems & Automation acknowledgment flips a handoff from Finance", async () => {
+  const history = [
+    hist("20.1", "TO: Systems & Automation\nFROM: Finance\nFix the feed"),
+    intakeLine("20.2", "Systems & Automation"),
+  ];
+  const f = fakeDeps({ threadHistory: async () => history });
+  assert.equal(await handleIntake(handoff("Acknowledged by Systems & Automation", { ts: "20.5", thread_ts: "20.1" }), cfg, f.deps), "acknowledged");
+  assert.deepEqual(f.marks, ["acknowledged:20.1"]);
+});
+
+test("false acknowledgments are refused", () => {
+  const queued = [hist("1.1", "TO: Finance\nFROM: Systems & Automation\nx"), intakeLine("1.2", "Finance")];
+  // wrong function
+  assert.equal(findAckTarget(queued, "1.5", "Sales & Marketing", allowed).kind, "none");
+  // the sender's own function cannot acknowledge for the recipient
+  const self = [hist("1.1", "TO: Finance\nFROM: Finance\nx"), intakeLine("1.2", "Finance")];
+  assert.deepEqual(findAckTarget(self, "1.5", "Finance", allowed), { kind: "none", reason: "ack-by-sender-function" });
+  // not queued by DK Operations yet
+  assert.deepEqual(findAckTarget([hist("1.1", "TO: Finance\nx")], "1.5", "Finance", allowed), { kind: "none", reason: "handoff-not-queued" });
+  // a human-typed lookalike of the intake line does not count as queued
+  const forged = [hist("1.1", "TO: Finance\nx"), hist("1.2", "Intake: read and queued for Finance.", { user: DAMIAN, self: false })];
+  assert.equal(findAckTarget(forged, "1.5", "Finance", allowed).kind, "none");
+  // an acknowledgment that arrives before the handoff
+  assert.equal(findAckTarget(queued, "0.9", "Finance", allowed).kind, "none");
+  // a thread with no handoff at all
+  assert.equal(findAckTarget([hist("1.1", "hello")], "1.5", "Finance", allowed).kind, "none");
+});
+
+test("unsafe acknowledgments through the full path change nothing", async () => {
+  const history = [hist("10.1", "TO: Finance\nFROM: Systems & Automation\nx"), intakeLine("10.2", "Finance")];
+  const run = async (event: object, over: Partial<IntakeDeps> = {}) => {
+    const f = fakeDeps({ threadHistory: async () => history, ...over });
+    const out = await handleIntake(handoff("Acknowledged by Finance", event), cfg, f.deps);
+    return { out, marks: f.marks, posts: f.posts };
+  };
+  assert.deepEqual((await run({ ts: "10.5" })).marks, [], "not in a thread");
+  assert.deepEqual((await run({ ts: "10.5", thread_ts: "10.5" })).marks, [], "thread root, not a reply");
+  assert.deepEqual((await run({ ts: "10.5", thread_ts: "10.1", user: "U0OTHER" })).marks, [], "sender not allowlisted");
+  assert.deepEqual((await run({ ts: "10.5", thread_ts: "10.1", user: undefined })).marks, [], "no human sender");
+  assert.deepEqual((await run({ ts: "10.5", thread_ts: "10.1" }, { isSelf: async () => true })).marks, [], "own post");
+  assert.deepEqual((await run({ ts: "10.5", thread_ts: "10.1", subtype: "message_changed" })).marks, [], "edited message");
+});
+
+test("a duplicate acknowledgment does not change anything twice, and the same event is processed once", async () => {
+  const history = [
+    hist("10.1", "TO: Finance\nFROM: Systems & Automation\nx"),
+    intakeLine("10.2", "Finance"),
+    hist("10.4", "Acknowledged by Finance"),
+  ];
+  const f = fakeDeps({ threadHistory: async () => history });
+  assert.deepEqual(findAckTarget(history, "10.6", "Finance", allowed), { kind: "none", reason: "already-acknowledged" });
+  assert.equal(await handleIntake(handoff("Acknowledged by Finance", { ts: "10.6", thread_ts: "10.1" }), cfg, f.deps), "skipped");
+  assert.deepEqual(f.marks, []);
+  // the same Slack message delivered twice
+  const g = fakeDeps({ threadHistory: async () => history.slice(0, 2) });
+  assert.equal(await handleIntake(handoff("Acknowledged by Finance", { ts: "10.4", thread_ts: "10.1" }), cfg, g.deps), "acknowledged");
+  assert.equal(await handleIntake(handoff("Acknowledged by Finance", { ts: "10.4", thread_ts: "10.1" }), cfg, g.deps), "skipped");
+  assert.deepEqual(g.marks, ["acknowledged:10.1"]);
+});
+
+test("two handoffs in one thread: an acknowledgment answers the latest queued one, and only once", () => {
+  const history = [
+    hist("1.1", "TO: Finance\nFROM: Systems & Automation\nfirst"),
+    intakeLine("1.2", "Finance"),
+    hist("2.1", "TO: Finance\nFROM: Systems & Automation\nsecond"),
+    intakeLine("2.2", "Finance"),
+  ];
+  assert.deepEqual(findAckTarget(history, "3.0", "Finance", allowed), { kind: "target", ts: "2.1" });
+});
+
+test("a failure to change the marker never breaks the relay", async () => {
+  const f = fakeDeps({
+    threadHistory: async () => [hist("10.1", "TO: Finance\nFROM: Systems & Automation\nx"), intakeLine("10.2", "Finance")],
+    markAcknowledged: async () => {
+      throw new Error("missing_scope");
+    },
+  });
+  assert.equal(await handleIntake(handoff("Acknowledged by Finance", { ts: "10.5", thread_ts: "10.1" }), cfg, f.deps), "skipped");
+  const p = fakeDeps({
+    markPending: async () => {
+      throw new Error("missing_scope");
+    },
+  });
+  assert.equal(await handleIntake(handoff("TO: Finance\nx"), cfg, p.deps), "read");
+  assert.equal(p.posts.length, 1);
+});
+
+test("GPT's own reply marks its handoff acknowledged", async () => {
+  const f = fakeDeps();
+  await handleIntake(handoff("TO: GPT\nWhat is 2+2?", { ts: "30.1" }), cfg, f.deps);
+  assert.deepEqual(f.marks, ["acknowledged:30.1"]);
 });
