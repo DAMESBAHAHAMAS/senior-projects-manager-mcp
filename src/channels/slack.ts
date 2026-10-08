@@ -302,7 +302,10 @@ export async function joinActiveSlackChannels(): Promise<void> {
     log({ step: "auto-join", outcome: "skipped", reason: "SLACK_BOT_TOKEN not set" });
     return;
   }
-  for (const channel of activeConversationIds("slack")) {
+  // Intake channels too, when the relay is on: Slack only sends events for channels the bot is in.
+  const intake = intakeConfig(new Set());
+  const channels = new Set([...activeConversationIds("slack"), ...(intake.enabled ? intake.channels : [])]);
+  for (const channel of channels) {
     try {
       await slackApi(botToken, "conversations.join", { channel });
       log({ step: "auto-join", channel, outcome: "joined" });
