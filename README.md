@@ -175,3 +175,20 @@ the same environment variables.
 This server triggers a live business agent with write access to a real Zoho
 Projects portal, CRM notes, and WorkDrive uploads. Do not deploy it without
 `MCP_SERVER_API_KEY` set, and treat that key like any other credential.
+
+## Release history
+
+### v1.0.0 — production accepted 2026-09-29
+
+- **Production baseline:** `6e0b783` (tag `v1.0.0`)
+- **Deployed service:** `senior-projects-manager-mcp-server` (Render)
+- **Acceptance tests:**
+  - READ: PASS
+  - EXECUTION: PASS
+  - INFERENCE FAILURE: PASS
+- **Architecture proven:** AI client → MCP gateway → Zia Intelligence → Zia
+  Execution → Zoho One → verified response
+- Claude was the first acceptance-test client; the MCP gateway remains
+  AI-client agnostic.
+- Commits after `6e0b783` (from `1cd5807`, WorkDrive tools and Slack routing)
+  were deployed later and have not been through these acceptance tests.
